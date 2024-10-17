@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader, Dataset
 import segmentation_models_pytorch as smp
 import wandb
 import albumentations as A
-from sklearn.metrics import f1_score
+from sklearn.metrics import precision_score, recall_score, f1_score
 
 
 ROOT = Path(__file__).parent
@@ -115,13 +115,24 @@ def iou_metric(preds, labels, num_classes=2):
     
 def f1_metric(preds, labels):
     # Flatten the arrays
-    y_true = labels.flatten()
-    y_pred = preds.flatten()
+    y_pred_flat = preds.cpu().numpy().flatten()
+    y_true_flat = labels.cpu().numpy().flatten()
     
     # Calculate F1 score
-    f1 = f1_score(y_true, y_pred)
+    f1 = f1_score(y_pred_flat, y_true_flat, zero_division=0)
     return f1
 
+def precision_metric(preds, labels):
+    y_pred_flat = preds.cpu().numpy().flatten()
+    y_true_flat = labels.cpu().numpy().flatten()
+    precision = precision_score(y_true_flat, y_pred_flat, zero_division=0)
+    return precision
+
+def recall_metric(preds, labels):
+    y_pred_flat = preds.cpu().numpy().flatten()
+    y_true_flat = labels.cpu().numpy().flatten()
+    recall = recall_score(y_true_flat, y_pred_flat, zero_division=0)
+    return recall
 
 def calculate_metrics(preds, labels):
     """Calculate accuracy and IoU for a batch.
@@ -133,9 +144,11 @@ def calculate_metrics(preds, labels):
        
     global_iou, per_class_iou = iou_metric(preds, labels)
     global_acc, per_class_acc = accuracy_metric(preds, labels)
-    # f1_score = f1_metric(preds, labels)
+    f1_score = f1_metric(preds, labels)
+    precision_score = precision_metric(preds, labels)
+    recall_score = recall_metric(preds, labels)
     
-    return global_iou, per_class_iou, global_acc, per_class_acc
+    return global_iou, per_class_iou, global_acc, per_class_acc, f1_score, precision_score, recall_score
 
 def create_paths(root, target):
     img_dir = root + target + '/images'
@@ -166,10 +179,10 @@ def main(root, cwd):
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
     # Initialize the model, loss function, and optimizer
-    encoder_name = 'mit_b1'
+    encoder_name = 'mit_b5'
     encoder_weights = 'imagenet'
     
-    model = smp.FPN(
+    model = smp.Unet(
         encoder_name=encoder_name,        # Use ResNet-34 as the encoder
         encoder_weights=encoder_weights,     # Use ImageNet pre-trained weights
         in_channels=3,                  # Input channels (RGB)
@@ -186,7 +199,7 @@ def main(root, cwd):
     
     # Initialize Weights & Biases (W&B)
     project= "smp_custom_training"
-    session_name = f"{model.__class__.__name__}_{encoder_name}_e{num_epochs}_batch{batch_size}_{optimizer.__class__.__name__}_v2.2"
+    session_name = f"{model.__class__.__name__}_{encoder_name}_e{num_epochs}_batch{batch_size}_{optimizer.__class__.__name__}_{loss_fn.__class__.__name__}_v2.2"
     wandb.login()
     wandb.init(project=project,
                 name=session_name)
@@ -225,6 +238,9 @@ def main(root, cwd):
         val_loss = 0.0
         tot_per_class_iou = [0.0, 0.0]
         tot_per_class_acc = [0.0, 0.0]
+        precision_total = 0.0
+        recall_total = 0.0
+        f1_total = 0.0
         total_acc = 0.0
         total_iou = 0.0
         pbar = tqdm(val_loader, desc="Validation", leave=False)
@@ -243,7 +259,7 @@ def main(root, cwd):
                 preds = torch.sigmoid(logits)
                 # Convert propabilities to binary predictions (0, 1) by thresholding at 0.5
                 preds = (preds > 0.5).int()
-                global_iou, per_class_iou, global_acc, per_class_acc = calculate_metrics(preds, masks)
+                global_iou, per_class_iou, global_acc, per_class_acc, f1_score, precision_score, recall_score = calculate_metrics(preds, masks)
                 
                 for idx in range(len(per_class_acc)):
                     tot_per_class_acc[idx] += per_class_acc[idx]
@@ -251,12 +267,19 @@ def main(root, cwd):
                 
                 total_acc += global_acc
                 total_iou += global_iou
+                
+                precision_total += precision_score
+                recall_total += recall_score
+                f1_total += f1_score
                 pbar.set_postfix(val_loss=val_loss / len(val_loader))
         
         avg_val_loss = val_loss / len(val_loader)
         # avg_val_f1 = f1_score / len(val_loader)
         tot_per_class_acc = [elem / len(val_loader) for elem in tot_per_class_acc]
         tot_per_class_iou = [elem / len(val_loader) for elem in tot_per_class_iou]
+        precision_avg = precision_total / len(val_loader)
+        recall_avg = recall_total / len(val_loader)
+        f1_avg = f1_total / len(val_loader)
         
         mean_accuracy = total_acc / len(val_loader)
         mean_iou = (tot_per_class_iou[0] + tot_per_class_iou[1]) / 2
@@ -286,6 +309,9 @@ def main(root, cwd):
             "epoch": epoch+1,
             "train_loss": train_loss / len(train_loader),
             "val_loss": val_loss / len(val_loader),
+            "Precision": precision_avg,
+            "Recall": recall_avg,
+            "F1_score": f1_avg,
             "IoU/mIoU": mean_iou,
             f"IoU/Class_{0}": tot_per_class_iou[0],
             f"IoU/Class_{1}": tot_per_class_iou[1],
@@ -297,7 +323,7 @@ def main(root, cwd):
 
     print("Training complete.")
 
-    print('Model and training components saved')
+    print(f"Model and training components saved at {cwd + '/' + target_path + '/best_model' + '/' + f'best_checkpoint.pth'}")
     print(f"\n Best model at epoch {checkpoint['epoch']}")
 
 
