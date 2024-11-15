@@ -79,7 +79,7 @@ def main(data_root, cwd):
     num_epochs = 50
     
     # Define loss function, optimizer and learning rate scheduler
-    loss_fn = smp.losses.DiceLoss(smp.losses.BINARY_MODE)
+    loss_fn = smp.losses.DiceLoss(smp.losses.BINARY_MODE, from_logits=True)
     # loss_fn = smp.losses.SoftBCEWithLogitsLoss()
     optimizer = optim.AdamW(model.parameters(), lr=1e-5, weight_decay=0.01)
     lf = lambda x: ((1 - math.cos(x * math.pi / num_epochs)) / 2) * (0.1 - 1) + 1
